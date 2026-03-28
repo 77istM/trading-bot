@@ -1,0 +1,7 @@
+
+alpaca-py
+pandas
+TA-Lib
+requests
+langchain
+langchain-community

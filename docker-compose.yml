@@ -4,3 +4,16 @@ services:
     build: .
     container_name: trading_bot
     network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+
+  dashboard:
+    build: .
+    container_name: streamlit_gui
+    command: ["streamlit", "run", "dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app

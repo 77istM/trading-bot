@@ -1,4 +1,5 @@
 import logging
+import sqlite3
 
 from langchain_core.prompts import PromptTemplate
 
@@ -16,17 +17,32 @@ def pre_trade_analysis(
     fear_level: str,
     stop_pct: float,
     take_pct: float,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple:
     """Synthesise all signals through Ollama and decide trade direction.
 
     The bot explicitly declares how much it is willing to lose and profit
-    before each trade.
+    before each trade.  When a database connection is supplied, recent
+    stop-loss and EOD lessons are injected into the prompt so the bot can
+    learn from past mistakes.
 
     Returns
     -------
     (direction: str, should_trade: bool, reason: str, full_analysis: str)
     direction is one of "BUY", "SELL", or "HOLD".
     """
+    # Build a lessons section from recent reflections (if available)
+    lessons_section = ""
+    if conn is not None:
+        try:
+            from reflection.engine import get_recent_lessons
+            lessons = get_recent_lessons(conn, ticker=ticker, n=3)
+            if lessons:
+                lessons_text = "\n".join(f"  - {l}" for l in lessons)
+                lessons_section = f"\nPAST LESSONS (from previous stop-losses / EOD reviews):\n{lessons_text}\n"
+        except Exception as exc:
+            logger.debug("Could not inject lessons for %s: %s", ticker, exc)
+
     template = """
 You are a hedge fund portfolio manager with billions under management.
 Analyze this potential trade for {ticker}:
@@ -41,13 +57,14 @@ MARKET SIGNALS:
 RISK PARAMETERS:
 - Maximum loss I am willing to accept: {stop_pct}% (stop loss)
 - Target profit I want to capture:     {take_pct}% (take profit)
-
+{lessons_section}
 Think step by step:
 1. What is the overall market environment saying?
 2. Is this stock likely to go UP or DOWN?
 3. Should I go LONG (BUY, profit if price rises) or SHORT (SELL, profit if price falls)?
 4. Is the risk-reward ratio favourable given a {stop_pct}% stop and {take_pct}% target?
 5. What is my confidence level?
+6. Do any PAST LESSONS change my assessment?
 
 Respond in EXACTLY this format (nothing else):
 DIRECTION: [BUY or SELL or HOLD]
@@ -61,7 +78,7 @@ REASON: [One sentence explanation]
         template=template,
         input_variables=[
             "ticker", "sentiment", "technical", "geopolitics",
-            "fed_rate", "fear_level", "stop_pct", "take_pct",
+            "fed_rate", "fear_level", "stop_pct", "take_pct", "lessons_section",
         ],
     )
     try:
@@ -74,6 +91,7 @@ REASON: [One sentence explanation]
             "fear_level": fear_level,
             "stop_pct": f"{stop_pct * 100:.1f}",
             "take_pct": f"{take_pct * 100:.1f}",
+            "lessons_section": lessons_section,
         }).strip()
     except Exception as exc:
         logger.error("LLM pre-trade analysis failed for %s: %s.", ticker, exc)

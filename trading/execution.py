@@ -20,10 +20,15 @@ def execute_trade(
     signals: dict,
     stop_pct: float,
     take_pct: float,
-) -> None:
+) -> int | None:
     """Submit a market order (long or short) with ring-fence position sizing.
 
     Calculates and stores stop-loss and take-profit price levels.
+
+    Returns
+    -------
+    int | None
+        The row id of the inserted trade record, or ``None`` on failure.
     """
     side = OrderSide.BUY if direction == "BUY" else OrderSide.SELL
 
@@ -103,6 +108,7 @@ def execute_trade(
         ),
     )
     conn.commit()
+    return cursor.lastrowid
 
 
 def _close_position(
@@ -112,8 +118,8 @@ def _close_position(
     close_side: str,
     current_price: float,
     reason: str,
-) -> None:
-    """Submit a closing market order and log it."""
+) -> int | None:
+    """Submit a closing market order, log it, and return the new trade row id."""
     side = OrderSide.BUY if close_side == "BUY" else OrderSide.SELL
     try:
         order_data = MarketOrderRequest(
@@ -142,9 +148,12 @@ def _close_position(
             (ticker, close_side, qty, filled_price, realized_pnl, reason),
         )
         conn.commit()
+        trade_id = cursor.lastrowid
         logger.info(
             "→ Closed %s: %s %s @ %s | PnL: %.2f",
             ticker, close_side, qty, filled_price, realized_pnl,
         )
+        return trade_id
     except Exception as exc:
         logger.error("Failed to close position %s: %s", ticker, exc)
+        return None

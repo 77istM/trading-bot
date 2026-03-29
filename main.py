@@ -1,4 +1,8 @@
 import logging
+import signal
+import time
+import types
+from datetime import date, datetime, timezone
 
 from config import (
     TICKERS,
@@ -6,8 +10,10 @@ from config import (
     STOP_LOSS_PCT,
     TAKE_PROFIT_PCT,
     MAX_POSITION_PCT,
+    LOOP_INTERVAL_SECONDS,
     _validate_credentials,
     _check_ollama_health,
+    trading_client,
 )
 from db.schema import init_db
 from db.queries import read_setting, get_daily_trade_count
@@ -17,49 +23,102 @@ from signals.macro import analyze_geopolitics, analyze_fed_rate, analyze_market_
 from trading.analysis import pre_trade_analysis, assess_risk
 from trading.execution import execute_trade
 from trading.monitor import monitor_positions
+from reflection.engine import (
+    reflect_on_stop_loss,
+    reflect_on_trade,
+    run_end_of_day_reflection,
+    eod_already_run_today,
+)
+from risk.controller import PortfolioRiskController
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Graceful-shutdown support
+# ---------------------------------------------------------------------------
+_RUNNING = True
 
-def main() -> None:
-    _validate_credentials()
-    _check_ollama_health()
 
+def _handle_signal(signum: int, frame: types.FrameType | None) -> None:
+    global _RUNNING
+    logger.info("Received signal %s — shutting down after the current cycle.", signum)
+    _RUNNING = False
+
+
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
+
+
+# ---------------------------------------------------------------------------
+# Market-hours helpers
+# ---------------------------------------------------------------------------
+
+def _market_is_open() -> bool:
+    """Return True if Alpaca reports the US market is currently open."""
     try:
-        conn = init_db()
+        clock = trading_client.get_clock()
+        return bool(clock.is_open)
     except Exception as exc:
-        logger.error("Failed to initialise database: %s", exc)
-        return
+        logger.warning("Could not check market clock: %s. Assuming open.", exc)
+        return True
 
-    # Read configurable risk settings (may be overridden via the dashboard UI)
+
+def _is_eod_window() -> bool:
+    """Return True if the current UTC time is past 21:00 (≈ 4 PM US/Eastern + buffer).
+
+    21:00 UTC ≈ 16:00–17:00 US Eastern (accounts for DST).
+    """
+    return datetime.now(timezone.utc).hour >= 21
+
+
+# ---------------------------------------------------------------------------
+# Single trading cycle
+# ---------------------------------------------------------------------------
+
+def _run_trading_cycle(conn, risk_ctrl: PortfolioRiskController) -> None:
+    """Execute one full monitor → analyse → trade cycle."""
     stop_pct = read_setting(conn, "stop_loss_pct", STOP_LOSS_PCT)
     take_pct = read_setting(conn, "take_profit_pct", TAKE_PROFIT_PCT)
 
-    daily_count = get_daily_trade_count(conn)
-    logger.info("Hedge Fund Bot Initialised. Analysing market...")
-    logger.info("Trades today: %d/%d", daily_count, DAILY_MAX_TRADES)
-    logger.info(
-        "Risk params: Stop=%.1f%% | Take=%.1f%% | Ring fence=%.1f%%",
-        stop_pct * 100, take_pct * 100, MAX_POSITION_PCT * 100,
-    )
+    # Step 1 — Monitor open positions; collect any stop-loss / take-profit events
+    logger.info("[Position Monitor] Checking open positions...")
+    closed_events = monitor_positions(conn, stop_pct, take_pct)
 
-    if daily_count >= DAILY_MAX_TRADES:
-        logger.warning("Daily maximum of %d trades already reached. Exiting.", DAILY_MAX_TRADES)
+    # Trigger real-time reflection for every stop-loss event
+    for event in closed_events:
+        if event.get("is_stop_loss"):
+            reflect_on_stop_loss(
+                conn,
+                ticker=event["ticker"],
+                trade_id=event.get("trade_id"),
+                signals=event.get("signals", {}),
+                pnl=event.get("pnl", 0.0),
+                stop_reason=event["reason"],
+            )
+
+    # Step 2 — Portfolio risk gate
+    can_trade, halt_reason = risk_ctrl.can_trade()
+    if not can_trade:
+        logger.warning("[RISK GATE] Skipping new trades this cycle: %s", halt_reason)
         return
 
-    # Step 1: Monitor open positions for stop loss / take profit
-    logger.info("[Position Monitor] Checking open positions...")
-    monitor_positions(conn, stop_pct, take_pct)
+    # Step 3 — Daily trade-count gate
+    daily_count = get_daily_trade_count(conn)
+    if daily_count >= DAILY_MAX_TRADES:
+        logger.warning("Daily maximum of %d trades already reached. Skipping new trades.", DAILY_MAX_TRADES)
+        return
 
-    # Step 2: Compute market-wide signals once (shared across all tickers)
+    # Step 4 — Market-wide signals (computed once, shared across all tickers)
     logger.info("[Market Analysis] Gathering market-wide signals...")
     geopolitics = analyze_geopolitics()
     fed_rate = analyze_fed_rate()
     fear_level = analyze_market_fear()
     logger.info("Geopolitics: %s | Fed Rate: %s | Market Fear: %s", geopolitics, fed_rate, fear_level)
 
-    # Step 3: Per-ticker analysis and execution
+    # Step 5 — Per-ticker analysis and execution
     for ticker in TICKERS:
+        if not _RUNNING:
+            break
         daily_count = get_daily_trade_count(conn)
         if daily_count >= DAILY_MAX_TRADES:
             logger.warning("Daily maximum of %d trades reached. Stopping.", DAILY_MAX_TRADES)
@@ -79,10 +138,9 @@ def main() -> None:
             "fear_level": fear_level,
         }
 
-        # Pre-trade analysis: bot thinks through risk/reward before committing
         direction, should_trade, reason, full_analysis = pre_trade_analysis(
             ticker, sentiment, technical, geopolitics, fed_rate, fear_level,
-            stop_pct, take_pct,
+            stop_pct, take_pct, conn=conn,
         )
         logger.info("  AI Decision: %s | Trade: %s | %s", direction, should_trade, reason)
 
@@ -91,13 +149,86 @@ def main() -> None:
         )
 
         if trade_ok:
-            execute_trade(conn, ticker, final_direction, final_reason, full_analysis, signals, stop_pct, take_pct)
+            trade_id = execute_trade(
+                conn, ticker, final_direction, final_reason, full_analysis, signals, stop_pct, take_pct
+            )
+            # Post-trade reflection: commit a 24h prediction
+            reflect_on_trade(
+                conn,
+                ticker=ticker,
+                trade_id=trade_id,
+                direction=final_direction,
+                signals=signals,
+                entry_price=0.0,  # best-effort; filled price is in trades table
+                reason=final_reason,
+            )
         else:
             logger.info("  → Skipping %s: %s", ticker, final_reason)
 
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    _validate_credentials()
+    _check_ollama_health()
+
+    try:
+        conn = init_db()
+    except Exception as exc:
+        logger.error("Failed to initialise database: %s", exc)
+        return
+
+    stop_pct = read_setting(conn, "stop_loss_pct", STOP_LOSS_PCT)
+    take_pct = read_setting(conn, "take_profit_pct", TAKE_PROFIT_PCT)
     daily_count = get_daily_trade_count(conn)
-    logger.info("Session complete. Trades today: %d/%d.", daily_count, DAILY_MAX_TRADES)
+
+    logger.info("Hedge Fund Bot started — continuous loop mode.")
+    logger.info("Trades today: %d/%d", daily_count, DAILY_MAX_TRADES)
+    logger.info(
+        "Risk params: Stop=%.1f%% | Take=%.1f%% | Ring fence=%.1f%% | Cycle=%ds",
+        stop_pct * 100, take_pct * 100, MAX_POSITION_PCT * 100, LOOP_INTERVAL_SECONDS,
+    )
+
+    risk_ctrl = PortfolioRiskController(conn)
+    risk_ctrl.record_day_start()
+
+    last_eod_date: date | None = None
+
+    while _RUNNING:
+        now_utc = datetime.now(timezone.utc)
+
+        # Reset day-start value at the start of each new calendar day
+        if last_eod_date != now_utc.date():
+            risk_ctrl.record_day_start()
+
+        # Check if we should run the EOD reflection (after 21:00 UTC, once per day)
+        if _is_eod_window() and last_eod_date != now_utc.date():
+            if not eod_already_run_today(conn):
+                logger.info("[EOD] Running end-of-day reflection...")
+                run_end_of_day_reflection(conn)
+            last_eod_date = now_utc.date()
+
+        # Only trade during market hours
+        if not _market_is_open():
+            logger.debug("Market closed — sleeping %ds.", LOOP_INTERVAL_SECONDS)
+            time.sleep(LOOP_INTERVAL_SECONDS)
+            continue
+
+        try:
+            _run_trading_cycle(conn, risk_ctrl)
+        except Exception as exc:
+            logger.error("Unhandled error in trading cycle: %s", exc, exc_info=True)
+
+        daily_count = get_daily_trade_count(conn)
+        logger.info("Cycle complete. Trades today: %d/%d. Sleeping %ds.",
+                    daily_count, DAILY_MAX_TRADES, LOOP_INTERVAL_SECONDS)
+        time.sleep(LOOP_INTERVAL_SECONDS)
+
+    logger.info("Bot stopped cleanly.")
 
 
 if __name__ == "__main__":
     main()
+

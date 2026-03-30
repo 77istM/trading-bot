@@ -13,11 +13,11 @@ An autonomous, multi-signal AI trading bot running on **Alpaca paper trading** (
 | **Phase 3** | Portfolio Risk Controller | ✅ **Done** | Daily drawdown halt, portfolio heat limit, risk snapshots |
 | **Phase 4** | Post-Trade Reflection | ✅ **Done** | Stop-loss real-time reflection, EOD review, lesson injection |
 | **Phase 5** | Multi-Strategy | 🔲 Backlog | Momentum, mean-reversion, pairs trading |
-| **Phase 6** | Performance Attribution | 🔲 Next up | Signal accuracy tracking, Sharpe, alpha vs benchmark |
+| **Phase 6** | Performance Attribution | ✅ **Done** | Signal accuracy tracking, Sharpe, drawdown, alpha vs benchmark |
 | **Phase 7** | Dashboard | ✅ Partial | Reflections viewer + risk status; needs attribution charts |
 | **Phase 8** | Hardening | 🔲 Backlog | Tests, CI/CD, secrets vault, alert notifications |
 
-### ➡️ **Next Phase to Work On: Phase 6 — Performance Attribution**
+### ➡️ **Next Phase to Work On: Phase 5 — Multi-Strategy**
 
 ---
 

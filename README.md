@@ -9,19 +9,35 @@ An autonomous, multi-signal AI trading bot running on **Alpaca paper trading** (
 | Phase | Name | Status | Notes |
 |-------|------|--------|-------|
 | **Phase 1** | Continuous Loop | ✅ **Done** | Infinite scheduler loop, market-hours gate, graceful shutdown |
-| **Phase 2** | Richer Signals | 🔲 Next up | MACD, Bollinger Bands, volume, earnings calendar |
+| **Phase 2** | Richer Signals | ✅ **Done** | MACD, Bollinger Bands, volume spike, earnings flag, momentum score |
 | **Phase 3** | Portfolio Risk Controller | ✅ **Done** | Daily drawdown halt, portfolio heat limit, risk snapshots |
 | **Phase 4** | Post-Trade Reflection | ✅ **Done** | Stop-loss real-time reflection, EOD review, lesson injection |
 | **Phase 5** | Multi-Strategy | 🔲 Backlog | Momentum, mean-reversion, pairs trading |
-| **Phase 6** | Performance Attribution | 🔲 Backlog | Signal accuracy tracking, Sharpe, alpha vs benchmark |
-| **Phase 7** | Dashboard | ✅ Partial | Reflections viewer + risk status added; needs richer charts |
+| **Phase 6** | Performance Attribution | 🔲 Next up | Signal accuracy tracking, Sharpe, alpha vs benchmark |
+| **Phase 7** | Dashboard | ✅ Partial | Reflections viewer + risk status; needs attribution charts |
 | **Phase 8** | Hardening | 🔲 Backlog | Tests, CI/CD, secrets vault, alert notifications |
 
-### ➡️ **Next Phase to Work On: Phase 2 — Richer Signals**
+### ➡️ **Next Phase to Work On: Phase 6 — Performance Attribution**
 
 ---
 
 ## ✅ What Has Been Implemented
+
+### Phase 2 — Richer Signals
+- `signals/technical.py` — complete rewrite, now computes a **full indicator suite**:
+  - **RSI(14)**: oversold < 30 → BULLISH, overbought > 70 → BEARISH
+  - **MACD(12,26,9)**: histogram direction + fresh crossover detection → BULLISH / BEARISH / NEUTRAL
+  - **Bollinger Bands(20, 2σ)**: price below lower band → BULLISH, above upper → BEARISH
+  - **Volume spike**: current volume ≥ 2× 20-day average → SPIKE_UP / SPIKE_DOWN
+  - **Momentum score**: composite −3 to +3 (RSI ±1, MACD ±1, BBands ±1, Volume ±0.5)
+  - `get_technical_signals(ticker) → dict` returns all indicators plus a compact `summary` string
+- `signals/earnings.py` (new) — **zero-cost earnings proximity detection**:
+  - Uses NewsAPI to scan the last 4 days of headlines for upcoming-earnings language
+  - Returns `NEAR` (event risk, be cautious), `SAFE`, or `UNKNOWN` (no API key)
+  - Distinguishes "upcoming" from "already reported" via separate regex pattern sets
+- Pre-trade LLM prompt now shows **all 6 technical dimensions** with inline explanations; the LLM reasons about earnings risk, volume spikes, and momentum direction
+- **Five new DB columns** on the `trades` table: `macd_signal`, `bbands_signal`, `volume_signal`, `earnings_flag`, `momentum_score`
+- Dashboard trade-history table now shows all new signal columns
 
 ### Phase 1 — Continuous Loop
 - `main.py` is now an **infinite scheduler loop** (default cycle: every 5 minutes, configurable via `LOOP_INTERVAL_SECONDS`)
@@ -70,7 +86,8 @@ trading-bot/
 │   └── queries.py             # Shared read/write helpers
 ├── signals/
 │   ├── sentiment.py           # NewsAPI + LLM sentiment
-│   ├── technical.py           # RSI via TA-Lib + Alpaca bars
+│   ├── technical.py           # RSI, MACD, BBands, Volume spike, Momentum score (Phase 2)
+│   ├── earnings.py            # Earnings proximity detection via NewsAPI (Phase 2)
 │   └── macro.py               # Geopolitics, Fed rate, VIX/fear
 ├── trading/
 │   ├── analysis.py            # Pre-trade LLM analysis (with lesson injection)
@@ -151,11 +168,12 @@ docker-compose up -d
 
 ## 🔮 What Needs to Be Done
 
-### Phase 2 — Richer Signals *(Medium complexity — high priority next)*
-- Add MACD, Bollinger Bands, VWAP to `signals/technical.py`
-- Add earnings calendar awareness (avoid holding through earnings)
-- Add volume-spike detection
-- Add momentum score combining RSI + MACD + volume
+### Phase 6 — Performance Attribution *(Medium — high priority next)*
+- Track which signals contributed to winning/losing trades
+- Sharpe ratio, max drawdown, win rate calculation
+- Benchmark comparison (SPY, EWU, EWJ, EWQ, EWG)
+- Signal accuracy scoreboard (was BULLISH RSI/MACD followed by actual price up?)
+- Per-signal P&L contribution breakdown
 
 ### Phase 5 — Multi-Strategy *(High complexity)*
 - Implement distinct strategy classes: momentum, mean-reversion, pairs trading

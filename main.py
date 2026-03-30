@@ -18,7 +18,8 @@ from config import (
 from db.schema import init_db
 from db.queries import read_setting, get_daily_trade_count
 from signals.sentiment import analyze_sentiment
-from signals.technical import get_technical_signal
+from signals.technical import get_technical_signals
+from signals.earnings import get_earnings_flag
 from signals.macro import analyze_geopolitics, analyze_fed_rate, analyze_market_fear
 from trading.analysis import pre_trade_analysis, assess_risk
 from trading.execution import execute_trade
@@ -127,20 +128,36 @@ def _run_trading_cycle(conn, risk_ctrl: PortfolioRiskController) -> None:
         logger.info("[%s] Analysing... (trades today: %d)", ticker, daily_count)
 
         sentiment = analyze_sentiment(ticker)
-        technical = get_technical_signal(ticker)
-        logger.info("  Sentiment: %s | Technical: %s", sentiment, technical)
+        tech = get_technical_signals(ticker)
+        earnings = get_earnings_flag(ticker)
+        logger.info(
+            "  Sentiment: %s | Tech: %s | Earnings: %s",
+            sentiment, tech["summary"], earnings,
+        )
 
         signals = {
             "sentiment": sentiment,
-            "technical": technical,
+            "technical": tech["summary"],
+            "rsi": tech["rsi"],
+            "macd": tech["macd"],
+            "bbands": tech["bbands"],
+            "volume": tech["volume"],
+            "momentum_score": tech["momentum_score"],
+            "earnings": earnings,
             "geopolitics": geopolitics,
             "fed_rate": fed_rate,
             "fear_level": fear_level,
         }
 
         direction, should_trade, reason, full_analysis = pre_trade_analysis(
-            ticker, sentiment, technical, geopolitics, fed_rate, fear_level,
+            ticker, sentiment, tech["summary"], geopolitics, fed_rate, fear_level,
             stop_pct, take_pct, conn=conn,
+            rsi_signal=tech["rsi"],
+            macd_signal=tech["macd"],
+            bbands_signal=tech["bbands"],
+            volume_signal=tech["volume"],
+            earnings_flag=earnings,
+            momentum_score=tech["momentum_score"],
         )
         logger.info("  AI Decision: %s | Trade: %s | %s", direction, should_trade, reason)
 
@@ -152,14 +169,24 @@ def _run_trading_cycle(conn, risk_ctrl: PortfolioRiskController) -> None:
             trade_id = execute_trade(
                 conn, ticker, final_direction, final_reason, full_analysis, signals, stop_pct, take_pct
             )
-            # Post-trade reflection: commit a 24h prediction
+            # Post-trade reflection: commit a 24h prediction using the actual fill price
+            entry_price = 0.0
+            if trade_id is not None:
+                try:
+                    row = conn.execute(
+                        "SELECT price FROM trades WHERE id = ?", (trade_id,)
+                    ).fetchone()
+                    if row and row[0] is not None:
+                        entry_price = float(row[0])
+                except Exception:
+                    pass
             reflect_on_trade(
                 conn,
                 ticker=ticker,
                 trade_id=trade_id,
                 direction=final_direction,
                 signals=signals,
-                entry_price=0.0,  # best-effort; filled price is in trades table
+                entry_price=entry_price,
                 reason=final_reason,
             )
         else:

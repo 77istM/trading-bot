@@ -94,8 +94,9 @@ def execute_trade(
         """INSERT INTO trades
            (ticker, side, qty, price, stop_loss_price, take_profit_price,
             sentiment, technical_signal, geopolitics, fed_sentiment, fear_level,
+            macd_signal, bbands_signal, volume_signal, earnings_flag, momentum_score,
             trade_analysis, realized_pnl, reason)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ticker, direction, float(qty), filled_price, stop_price, take_price,
             signals.get("sentiment", "NEUTRAL"),
@@ -103,6 +104,11 @@ def execute_trade(
             signals.get("geopolitics", "MEDIUM_RISK"),
             signals.get("fed_rate", "NEUTRAL"),
             signals.get("fear_level", "MEDIUM"),
+            signals.get("macd", "NEUTRAL"),
+            signals.get("bbands", "NEUTRAL"),
+            signals.get("volume", "NORMAL"),
+            signals.get("earnings", "UNKNOWN"),
+            signals.get("momentum_score", 0.0),
             full_analysis[:MAX_ANALYSIS_LENGTH] if full_analysis else reason,
             realized_pnl, reason,
         ),

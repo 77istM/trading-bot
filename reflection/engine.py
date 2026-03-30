@@ -58,7 +58,7 @@ def _store_reflection(
                 ticker,
                 outcome,
                 pnl,
-                lesson[:MAX_ANALYSIS_LENGTH] if lesson else "",
+                lesson[:MAX_LESSON_LENGTH] if lesson else "",
                 raw_analysis[:MAX_ANALYSIS_LENGTH] if raw_analysis else "",
             ),
         )

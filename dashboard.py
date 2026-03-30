@@ -215,13 +215,17 @@ st.subheader("📋 Trade History")
 desired_cols = [
     "trade_rowid", "created_at", "ticker", "side", "qty", "price",
     "stop_loss_price", "take_profit_price",
-    "sentiment", "technical_signal", "geopolitics", "fed_sentiment", "fear_level",
+    # Phase 1 signals
+    "sentiment", "geopolitics", "fed_sentiment", "fear_level",
+    # Phase 2 signals
+    "technical_signal", "macd_signal", "bbands_signal", "volume_signal",
+    "earnings_flag", "momentum_score",
     "realized_pnl", "reason",
 ]
 display_cols = [c for c in desired_cols if c in trades_df.columns]
 display_df = trades_df[display_cols].copy() if display_cols else trades_df.copy()
 
-for col in ("price", "stop_loss_price", "take_profit_price", "realized_pnl"):
+for col in ("price", "stop_loss_price", "take_profit_price", "realized_pnl", "momentum_score"):
     if col in display_df.columns:
         display_df[col] = pd.to_numeric(display_df[col], errors="coerce").round(4)
 

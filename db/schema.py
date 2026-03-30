@@ -44,6 +44,12 @@ def init_db() -> sqlite3.Connection:
         ("fed_sentiment", "TEXT"),
         ("fear_level", "TEXT"),
         ("trade_analysis", "TEXT"),
+        # Phase 2 — Richer Signals
+        ("macd_signal", "TEXT"),
+        ("bbands_signal", "TEXT"),
+        ("volume_signal", "TEXT"),
+        ("earnings_flag", "TEXT"),
+        ("momentum_score", "REAL"),
     ]
     for col_name, col_type in new_columns:
         if col_name not in existing_columns:

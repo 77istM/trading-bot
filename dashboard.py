@@ -85,6 +85,13 @@ def read_bool_setting(key: str, default: bool) -> bool:
         conn.close()
 
 
+def get_short_modes() -> tuple[bool, bool]:
+    """Return persisted short-mode settings for stocks and crypto."""
+    stock = read_bool_setting("allow_stock_shorts", DEFAULT_ALLOW_STOCK_SHORTS)
+    crypto = read_bool_setting("allow_crypto_shorts", DEFAULT_ALLOW_CRYPTO_SHORTS)
+    return stock, crypto
+
+
 # --- Sidebar: Risk Configuration ---
 with st.sidebar:
     st.header("⚙️ Risk Configuration")
@@ -127,15 +134,29 @@ with st.sidebar:
         help="Enable SELL orders for crypto symbols.",
     )
 
-    if st.button("💾 Save Risk Settings"):
-        write_setting("stop_loss_pct", stop_pct)
-        write_setting("take_profit_pct", take_pct)
-        write_setting("allow_stock_shorts", allow_stock_shorts)
-        write_setting("allow_crypto_shorts", allow_crypto_shorts)
-        st.success(
-            "Saved risk controls and direction toggles. "
-            f"Stop = {stop_pct * 100:.1f}% | Take = {take_pct * 100:.1f}%"
+    enabling_stock_shorts = allow_stock_shorts and not current_stock_shorts
+    enabling_crypto_shorts = allow_crypto_shorts and not current_crypto_shorts
+    needs_short_confirm = enabling_stock_shorts or enabling_crypto_shorts
+    short_enable_confirmed = True
+    if needs_short_confirm:
+        short_enable_confirmed = st.checkbox(
+            "I understand shorting increases risk and can amplify losses",
+            value=False,
+            help="Required only when turning shorting from OFF to ON.",
         )
+
+    if st.button("💾 Save Risk Settings"):
+        if needs_short_confirm and not short_enable_confirmed:
+            st.error("Please confirm shorting risk before enabling short trades.")
+        else:
+            write_setting("stop_loss_pct", stop_pct)
+            write_setting("take_profit_pct", take_pct)
+            write_setting("allow_stock_shorts", allow_stock_shorts)
+            write_setting("allow_crypto_shorts", allow_crypto_shorts)
+            st.success(
+                "Saved risk controls and direction toggles. "
+                f"Stop = {stop_pct * 100:.1f}% | Take = {take_pct * 100:.1f}%"
+            )
 
     # Keep caption in sync even before pressing save.
     stock_direction = "Long + Short" if allow_stock_shorts else "Long-only (BUY)"
@@ -245,14 +266,17 @@ def _bot_activity_hint(db_path: str) -> tuple[bool, str]:
 # --- Load Data ---
 trades_df = load_trades(DB_PATH)
 
+stock_shorts_enabled, crypto_shorts_enabled = get_short_modes()
+stock_mode = "Long + Short" if stock_shorts_enabled else "Long-only"
+crypto_mode = "Long + Short" if crypto_shorts_enabled else "Long-only"
+status_col1, status_col2 = st.columns(2)
+status_col1.metric("Stock Direction Mode", stock_mode)
+status_col2.metric("Crypto Direction Mode", crypto_mode)
+
 if trades_df.empty:
     st.warning(f"No trades found at '{DB_PATH}'.")
     active, detail = _bot_activity_hint(DB_PATH)
     if active:
-        stock_shorts_enabled = read_bool_setting("allow_stock_shorts", DEFAULT_ALLOW_STOCK_SHORTS)
-        crypto_shorts_enabled = read_bool_setting("allow_crypto_shorts", DEFAULT_ALLOW_CRYPTO_SHORTS)
-        stock_mode = "Long + Short" if stock_shorts_enabled else "Long-only"
-        crypto_mode = "Long + Short" if crypto_shorts_enabled else "Long-only"
         st.info(
             "Bot is running, but no orders have been executed yet. "
             f"Current direction filters: Stocks {stock_mode}, Crypto {crypto_mode}."

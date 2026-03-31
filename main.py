@@ -209,7 +209,15 @@ def _run_trading_cycle(conn, risk_ctrl: PortfolioRiskController) -> None:
             fed_rate=fed_rate,
             fear_level=fear_level,
         )
-        strategy_decision = selector.choose(strategy_context, regime)
+        allowed_directions = {"BUY", "SELL"}
+        if is_crypto and not ALLOW_CRYPTO_SHORTS:
+            allowed_directions = {"BUY"}
+
+        strategy_decision = selector.choose(
+            strategy_context,
+            regime,
+            allowed_directions=allowed_directions,
+        )
         strategy_name = strategy_decision.strategy_name
         strategy_regime = strategy_decision.regime
         direction = strategy_decision.direction
